@@ -113,7 +113,8 @@ const DEFAULT_SETTINGS = {
     autoExtractActionItems: true,
     autoDetectDecisions: true,
     autoLinkNotes: true,
-    templateEnabled: true
+    templateEnabled: true,
+    micSensitivity: 3 // 1-5 scale (default: 3 = medium)
 };
 
 const MEETING_TEMPLATE = `---
@@ -185,6 +186,26 @@ class MeetingModal extends Modal {
             value: this.plugin.settings.attendeesDefault,
             cls: 'meeting-input'
         });
+
+        // Language selection
+        const langContainer = infoContainer.createDiv({ cls: 'meeting-input-row' });
+        langContainer.createEl('label', { text: 'Language:' });
+        this.languageSelect = langContainer.createEl('select', { cls: 'meeting-select' });
+        this.languageSelect.createEl('option', { text: 'Auto-detect', value: 'auto' });
+        this.languageSelect.createEl('option', { text: 'English', value: 'en' });
+        this.languageSelect.createEl('option', { text: 'Deutsch', value: 'de' });
+        this.languageSelect.value = this.plugin.settings.language;
+
+        // Microphone sensitivity
+        const micContainer = infoContainer.createDiv({ cls: 'meeting-input-row' });
+        micContainer.createEl('label', { text: 'Mic Sensitivity:' });
+        this.micSensitivitySelect = micContainer.createEl('select', { cls: 'meeting-select' });
+        this.micSensitivitySelect.createEl('option', { text: '1 - Very Low', value: '1' });
+        this.micSensitivitySelect.createEl('option', { text: '2 - Low', value: '2' });
+        this.micSensitivitySelect.createEl('option', { text: '3 - Medium', value: '3' });
+        this.micSensitivitySelect.createEl('option', { text: '4 - High', value: '4' });
+        this.micSensitivitySelect.createEl('option', { text: '5 - Extreme', value: '5' });
+        this.micSensitivitySelect.value = String(this.plugin.settings.micSensitivity);
 
         // Status
         this.statusEl = contentEl.createDiv({ cls: 'meeting-status' });
@@ -266,7 +287,12 @@ class MeetingModal extends Modal {
                 if (!this.isRecording) return;
                 analyser.getByteFrequencyData(dataArray);
                 const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-                const level = (average / 255) * 100;
+
+                // Apply sensitivity multiplier (1-5)
+                const sensitivity = parseInt(this.micSensitivitySelect.value);
+                const multiplier = sensitivity / 3; // 3 is the default
+                const level = Math.min(100, (average / 255) * 100 * multiplier);
+
                 this.updateMicLevel(level);
                 requestAnimationFrame(updateLevel);
             };
@@ -335,7 +361,9 @@ class MeetingModal extends Modal {
             return;
         }
 
-        const language = this.plugin.settings.language === 'auto' ? '' : `-l ${this.plugin.settings.language}`;
+        // Use language from modal if selected, otherwise from settings
+        const selectedLanguage = this.languageSelect ? this.languageSelect.value : this.plugin.settings.language;
+        const language = selectedLanguage === 'auto' ? '' : `-l ${selectedLanguage}`;
         const command = `${this.plugin.settings.whisperPath} -m "${modelPath}" ${language} -f "${audioPath}" --output-txt`;
 
         this.updateTranscribeProgress(30, 'Transcribing audio...');
@@ -658,6 +686,18 @@ class MeetingIntelligenceSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.attendeesDefault)
                 .onChange(async (value) => {
                     this.plugin.settings.attendeesDefault = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Microphone Sensitivity')
+            .setDesc('Default microphone sensitivity (1=Very Low, 5=Extreme)')
+            .addSlider(slider => slider
+                .setLimits(1, 5, 1)
+                .setValue(this.plugin.settings.micSensitivity)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.micSensitivity = value;
                     await this.plugin.saveSettings();
                 }));
 

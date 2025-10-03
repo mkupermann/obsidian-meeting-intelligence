@@ -39,6 +39,33 @@
     border-color: var(--interactive-accent);
 }
 
+.meeting-input-row {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 10px;
+    align-items: center;
+    margin: 8px 0;
+}
+
+.meeting-select {
+    padding: 8px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.meeting-select:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+}
+
+.meeting-select:hover {
+    background: var(--background-modifier-hover);
+}
+
 .meeting-status {
     text-align: center;
     padding: 12px;
@@ -86,6 +113,7 @@
     left: 0;
     top: 0;
     height: 100%;
+    width: 0%; /* Start at 0, will animate during recording */
     background: linear-gradient(90deg, #4CAF50, #8BC34A, #FFC107);
     transition: width 0.05s linear;
     border-radius: 18px;
