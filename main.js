@@ -346,6 +346,7 @@ class MeetingModal extends Modal {
         this.timerInterval = null;
         this.volumeLevel = 0;
         this.recorder = new AudioRecorder(plugin);
+        this.audioBlob = null; // Store audio blob for later saving
     }
 
     onOpen() {
@@ -468,8 +469,8 @@ class MeetingModal extends Modal {
         this.statusEl.setText('Processing recording...');
         this.updateMicLevel(0);
 
-        const audioBlob = await this.recorder.stopRecording();
-        await this.processRecording(audioBlob);
+        this.audioBlob = await this.recorder.stopRecording();
+        await this.processRecording(this.audioBlob);
     }
 
     async processRecording(audioBlob) {
@@ -571,13 +572,10 @@ class MeetingModal extends Modal {
                 new Notice('Transcript file not found');
             }
 
-            if (fs.existsSync(audioPath)) {
-                fs.unlinkSync(audioPath);
-            }
-
+            // Don't delete audio file yet - we'll save it with the note
             this.updateTranscribeProgress(90, 'Creating meeting note...');
 
-            await this.createMeetingNote(transcription, duration);
+            await this.createMeetingNote(transcription, duration, audioPath);
 
             this.updateTranscribeProgress(100, 'Complete!');
 
@@ -587,12 +585,15 @@ class MeetingModal extends Modal {
         });
     }
 
-    async createMeetingNote(transcription, duration) {
-        const folder = this.plugin.settings.meetingNotesFolder;
-
-        if (!await this.plugin.app.vault.adapter.exists(folder)) {
-            await this.plugin.app.vault.createFolder(folder);
+    async createMeetingNote(transcription, duration, audioPath) {
+        // Get current folder from active file, or use root
+        let folder = '';
+        const activeFile = this.plugin.app.workspace.getActiveFile();
+        if (activeFile) {
+            folder = activeFile.parent.path;
         }
+
+        console.log('Meeting Intelligence: Saving to folder:', folder);
 
         const now = new Date();
         const date = now.toISOString().split('T')[0];
@@ -643,7 +644,31 @@ class MeetingModal extends Modal {
         }
 
         const fileName = `${date} - ${title}.md`;
-        const filePath = `${folder}/${fileName}`;
+        const audioFileName = `${date} - ${title}.webm`;
+        const filePath = folder ? `${folder}/${fileName}` : fileName;
+        const audioFilePath = folder ? `${folder}/${audioFileName}` : audioFileName;
+
+        // Save audio file
+        if (this.audioBlob) {
+            try {
+                const arrayBuffer = await this.audioBlob.arrayBuffer();
+                await this.plugin.app.vault.adapter.writeBinary(audioFilePath, Buffer.from(arrayBuffer));
+                console.log('Meeting Intelligence: Saved audio to:', audioFilePath);
+
+                // Add audio link to content after title
+                const audioLink = `\n\n![[${audioFileName}]]\n`;
+                content = content.replace(/# {{title}}/, `# {{title}}${audioLink}`);
+                content = content.replace(`# ${title}`, `# ${title}${audioLink}`);
+            } catch (error) {
+                console.error('Meeting Intelligence: Failed to save audio:', error);
+                new Notice('Warning: Audio file could not be saved');
+            }
+        }
+
+        // Clean up temp WAV file
+        if (audioPath && fs.existsSync(audioPath)) {
+            fs.unlinkSync(audioPath);
+        }
 
         await this.plugin.app.vault.create(filePath, content);
 
