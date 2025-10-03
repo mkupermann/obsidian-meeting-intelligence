@@ -1,0 +1,9 @@
+{
+  "id": "meeting-intelligence",
+  "name": "Meeting Intelligence",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "Comprehensive meeting assistant with real-time transcription, automatic action item extraction, decision detection, and vault integration",
+  "author": "Michael Kupermann",
+  "isDesktopOnly": true
+}
