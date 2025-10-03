@@ -347,6 +347,9 @@ class MeetingModal extends Modal {
         this.volumeLevel = 0;
         this.recorder = new AudioRecorder(plugin);
         this.audioBlob = null; // Store audio blob for later saving
+        this.recordingParts = []; // Store multiple recording parts for auto-splitting
+        this.currentPartNumber = 1;
+        this.MAX_RECORDING_TIME = 60 * 60 * 1000; // 60 minutes in milliseconds
     }
 
     onOpen() {
@@ -460,6 +463,37 @@ class MeetingModal extends Modal {
         }
     }
 
+    async autoSplitRecording() {
+        console.log('Meeting Intelligence: Auto-splitting at 60 minutes, saving part', this.currentPartNumber);
+
+        new Notice(`Meeting part ${this.currentPartNumber} complete (60 min). Starting part ${this.currentPartNumber + 1}...`);
+
+        // Stop current recording and save it
+        const audioBlob = await this.recorder.stopRecording();
+        const duration = this.getDuration();
+
+        // Store this part
+        this.recordingParts.push({
+            blob: audioBlob,
+            duration: duration,
+            partNumber: this.currentPartNumber
+        });
+
+        // Immediately start new recording for next part
+        this.currentPartNumber++;
+        this.startTime = Date.now(); // Reset timer for new part
+
+        try {
+            await this.recorder.startRecording();
+            this.statusEl.setText(`🔴 Recording... (Part ${this.currentPartNumber})`);
+            console.log('Meeting Intelligence: Started part', this.currentPartNumber);
+        } catch (error) {
+            console.error('Meeting Intelligence: Failed to start next part:', error);
+            new Notice('Auto-split failed. Please stop and restart recording.');
+            this.isRecording = false;
+        }
+    }
+
     async stopRecording() {
         this.isRecording = false;
         clearInterval(this.timerInterval);
@@ -470,11 +504,51 @@ class MeetingModal extends Modal {
         this.updateMicLevel(0);
 
         this.audioBlob = await this.recorder.stopRecording();
-        await this.processRecording(this.audioBlob);
+
+        // If we have multiple parts, process them all
+        if (this.recordingParts.length > 0) {
+            // Add the final part
+            const duration = this.getDuration();
+            this.recordingParts.push({
+                blob: this.audioBlob,
+                duration: duration,
+                partNumber: this.currentPartNumber
+            });
+
+            await this.processMultiPartRecording();
+        } else {
+            // Single recording, process normally
+            await this.processRecording(this.audioBlob);
+        }
     }
 
-    async processRecording(audioBlob) {
-        const duration = this.getDuration();
+    async processMultiPartRecording() {
+        new Notice(`Processing ${this.recordingParts.length} recording parts...`);
+        console.log('Meeting Intelligence: Processing', this.recordingParts.length, 'parts');
+
+        // Process each part sequentially
+        for (let i = 0; i < this.recordingParts.length; i++) {
+            const part = this.recordingParts[i];
+            this.statusEl.setText(`Processing part ${part.partNumber}/${this.recordingParts.length}...`);
+
+            // Store current part info for file naming
+            this.currentProcessingPart = part.partNumber;
+            this.totalParts = this.recordingParts.length;
+
+            await this.processRecording(part.blob, part.duration);
+        }
+
+        // Reset for next recording
+        this.recordingParts = [];
+        this.currentPartNumber = 1;
+        this.currentProcessingPart = null;
+        this.totalParts = null;
+
+        new Notice('All recording parts processed!');
+    }
+
+    async processRecording(audioBlob, durationOverride = null) {
+        const duration = durationOverride || this.getDuration();
 
         console.log('Meeting Intelligence: Audio blob size:', audioBlob.size, 'bytes');
         console.log('Meeting Intelligence: Audio blob type:', audioBlob.type);
@@ -643,8 +717,10 @@ class MeetingModal extends Modal {
             }
         }
 
-        const fileName = `${date} - ${title}.md`;
-        const audioFileName = `${date} - ${title}.webm`;
+        // Add part number if this is a multi-part recording
+        const partSuffix = this.currentProcessingPart ? ` - Part ${this.currentProcessingPart}` : '';
+        const fileName = `${date} - ${title}${partSuffix}.md`;
+        const audioFileName = `${date} - ${title}${partSuffix}.webm`;
         const filePath = folder ? `${folder}/${fileName}` : fileName;
         const audioFilePath = folder ? `${folder}/${audioFileName}` : audioFileName;
 
@@ -776,6 +852,12 @@ class MeetingModal extends Modal {
             String(minutes).padStart(2, '0') + ':' +
             String(seconds).padStart(2, '0')
         );
+
+        // Auto-split at 60 minutes
+        if (this.isRecording && elapsed >= this.MAX_RECORDING_TIME) {
+            console.log('Meeting Intelligence: 60 minutes reached, auto-splitting...');
+            this.autoSplitRecording();
+        }
     }
 
     getDuration() {
