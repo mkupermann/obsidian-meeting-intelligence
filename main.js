@@ -474,15 +474,43 @@ class MeetingModal extends Modal {
         const arrayBuffer = await audioBlob.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
+        console.log('Meeting Intelligence: Audio blob size:', audioBlob.size, 'bytes');
+        console.log('Meeting Intelligence: Audio blob type:', audioBlob.type);
+
         const tempDir = this.plugin.app.vault.adapter.basePath + '/.obsidian/plugins/meeting-intelligence/temp';
         if (!fs.existsSync(tempDir)) {
             fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const audioPath = path.join(tempDir, 'meeting.wav');
-        fs.writeFileSync(audioPath, buffer);
+        // Save as webm first, then convert to WAV using ffmpeg
+        const webmPath = path.join(tempDir, 'meeting.webm');
+        const wavPath = path.join(tempDir, 'meeting.wav');
+        fs.writeFileSync(webmPath, buffer);
+        console.log('Meeting Intelligence: Saved webm to:', webmPath);
 
-        await this.transcribeAudio(audioPath, duration);
+        // Convert WebM to WAV using ffmpeg
+        this.updateTranscribeProgress(5, 'Converting audio...');
+        const convertCommand = `ffmpeg -i "${webmPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}" -y`;
+        console.log('Meeting Intelligence: Converting with:', convertCommand);
+
+        exec(convertCommand, async (error, stdout, stderr) => {
+            if (error) {
+                console.error('Meeting Intelligence: Conversion error:', error);
+                console.error('Meeting Intelligence: stderr:', stderr);
+                new Notice('Audio conversion failed. Is ffmpeg installed?');
+                this.resetModal();
+                return;
+            }
+
+            console.log('Meeting Intelligence: Conversion successful');
+
+            // Delete webm file
+            if (fs.existsSync(webmPath)) {
+                fs.unlinkSync(webmPath);
+            }
+
+            await this.transcribeAudio(wavPath, duration);
+        });
     }
 
     async transcribeAudio(audioPath, duration) {
@@ -502,32 +530,51 @@ class MeetingModal extends Modal {
             return;
         }
 
+        console.log('Meeting Intelligence: Model path:', modelPath);
+        console.log('Meeting Intelligence: Audio path:', audioPath);
+
         // Use language from modal if selected, otherwise from settings
         const selectedLanguage = this.languageSelect ? this.languageSelect.value : this.plugin.settings.language;
         const language = selectedLanguage === 'auto' ? '' : `-l ${selectedLanguage}`;
         const command = `${this.plugin.settings.whisperPath} -m "${modelPath}" ${language} -f "${audioPath}" --output-txt`;
 
+        console.log('Meeting Intelligence: Running command:', command);
+
         this.updateTranscribeProgress(30, 'Transcribing audio...');
 
         exec(command, { maxBuffer: 10 * 1024 * 1024 }, async (error, stdout, stderr) => {
+            console.log('Meeting Intelligence: Whisper stdout:', stdout);
+            console.log('Meeting Intelligence: Whisper stderr:', stderr);
+
             if (error) {
                 new Notice('Transcription failed: ' + error.message);
-                console.error('Transcription error:', stderr);
+                console.error('Meeting Intelligence: Transcription error:', error);
+                console.error('Meeting Intelligence: stderr:', stderr);
                 this.resetModal();
                 return;
             }
 
             this.updateTranscribeProgress(70, 'Processing transcript...');
 
-            const txtPath = audioPath.replace('.wav', '.wav.txt');
+            // Whisper creates .txt file next to the audio file
+            const txtPath = audioPath + '.txt';
             let transcription = '';
+
+            console.log('Meeting Intelligence: Looking for transcript at:', txtPath);
 
             if (fs.existsSync(txtPath)) {
                 transcription = fs.readFileSync(txtPath, 'utf-8').trim();
+                console.log('Meeting Intelligence: Transcription length:', transcription.length);
+                console.log('Meeting Intelligence: Transcription preview:', transcription.substring(0, 100));
                 fs.unlinkSync(txtPath);
+            } else {
+                console.error('Meeting Intelligence: Transcript file not found at:', txtPath);
+                new Notice('Transcript file not found');
             }
 
-            fs.unlinkSync(audioPath);
+            if (fs.existsSync(audioPath)) {
+                fs.unlinkSync(audioPath);
+            }
 
             this.updateTranscribeProgress(90, 'Creating meeting note...');
 
