@@ -812,20 +812,35 @@ class MeetingModal extends Modal {
             .split(/\s+/)
             .filter(word => word.length >= 3); // At least 3 characters
 
-        console.log('Meeting Intelligence: Searching for notes containing:', titleWords);
+        console.log('Meeting Intelligence: Meeting title:', meetingTitle);
+        console.log('Meeting Intelligence: Searching for words:', titleWords);
+
+        // Get current meeting note basename to exclude it
+        const now = new Date();
+        const date = now.toISOString().split('T')[0];
+        const partSuffix = this.currentProcessingPart ? ` - Part ${this.currentProcessingPart}` : '';
+        const currentNoteBasename = `${date} - ${meetingTitle}${partSuffix}`;
 
         for (const file of files) {
             const basename = file.basename.toLowerCase();
+            const basenameOriginal = file.basename;
+
+            // Don't include the current meeting note itself
+            if (basenameOriginal === currentNoteBasename) {
+                console.log('Meeting Intelligence: Skipping current note:', basenameOriginal);
+                continue;
+            }
 
             // Check if any word from the meeting title appears in other note names
             const hasMatch = titleWords.some(word => basename.includes(word));
 
-            if (hasMatch && file.basename !== meetingTitle) {
-                links.push(`- [[${file.basename}]]`);
+            if (hasMatch) {
+                console.log('Meeting Intelligence: Found match:', basenameOriginal, 'contains one of', titleWords);
+                links.push(`- [[${basenameOriginal}]]`);
             }
         }
 
-        console.log('Meeting Intelligence: Found related notes:', links.length);
+        console.log('Meeting Intelligence: Found', links.length, 'related notes');
         return links.slice(0, 10); // Limit to 10 links
     }
 
