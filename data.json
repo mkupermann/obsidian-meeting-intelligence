@@ -1,0 +1,11 @@
+{
+  "whisperPath": "/opt/homebrew/opt/whisper-cpp/bin/whisper-cli",
+  "modelSize": "medium",
+  "language": "auto",
+  "meetingNotesFolder": "Meetings",
+  "attendeesDefault": "",
+  "autoExtractActionItems": true,
+  "autoDetectDecisions": true,
+  "autoLinkNotes": true,
+  "templateEnabled": true
+}

@@ -2,6 +2,7 @@ const { Plugin, PluginSettingTab, Setting, Notice, TFile, Modal } = require('obs
 const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const ModelDownloader = require('./downloader');
 
 const DEFAULT_SETTINGS = {
     whisperPath: '/opt/homebrew/opt/whisper-cpp/bin/whisper-cli',
@@ -60,6 +61,10 @@ class MeetingModal extends Modal {
     onOpen() {
         const { contentEl } = this;
         contentEl.addClass('meeting-intelligence-modal');
+
+        // Make modal larger
+        this.modalEl.style.width = '700px';
+        this.modalEl.style.maxWidth = '90vw';
 
         contentEl.createEl('h2', { text: '🎙️ Meeting Intelligence' });
 
@@ -589,12 +594,74 @@ class MeetingIntelligenceSettingTab extends PluginSettingTab {
                 }));
 
         containerEl.createEl('h3', { text: 'Model Download' });
-        containerEl.createEl('p', {
-            text: 'Download Whisper models from: https://huggingface.co/ggerganov/whisper.cpp/tree/main',
-            cls: 'setting-item-description'
+
+        const downloader = new ModelDownloader(this.plugin.app.vault.adapter.basePath + '/.obsidian/plugins/meeting-intelligence');
+        const downloadedModels = downloader.getDownloadedModels();
+
+        // Model download section
+        const modelOptions = [
+            { id: 'tiny', name: 'Tiny (~75 MB)', desc: 'Fastest, basic quality' },
+            { id: 'tiny.en', name: 'Tiny English (~75 MB)', desc: 'Fastest, English only' },
+            { id: 'base', name: 'Base (~142 MB)', desc: 'Recommended - good balance' },
+            { id: 'base.en', name: 'Base English (~142 MB)', desc: 'Good balance, English only' },
+            { id: 'small', name: 'Small (~466 MB)', desc: 'High quality' },
+            { id: 'small.en', name: 'Small English (~466 MB)', desc: 'High quality, English only' },
+            { id: 'medium', name: 'Medium (~1.5 GB)', desc: 'Very high quality' },
+            { id: 'medium.en', name: 'Medium English (~1.5 GB)', desc: 'Very high quality, English only' }
+        ];
+
+        modelOptions.forEach(model => {
+            const isDownloaded = downloadedModels.includes(model.id);
+
+            new Setting(containerEl)
+                .setName(model.name)
+                .setDesc(model.desc + (isDownloaded ? ' ✅ Downloaded' : ''))
+                .addButton(button => {
+                    if (isDownloaded) {
+                        button
+                            .setButtonText('Delete')
+                            .setCta()
+                            .onClick(async () => {
+                                if (downloader.deleteModel(model.id)) {
+                                    new Notice(`Model ${model.name} deleted`);
+                                    this.display(); // Refresh
+                                }
+                            });
+                    } else {
+                        button
+                            .setButtonText('Download')
+                            .setCta()
+                            .onClick(async () => {
+                                button.setDisabled(true);
+                                button.setButtonText('Downloading...');
+
+                                const statusEl = containerEl.createDiv({ cls: 'model-download-status' });
+                                statusEl.style.marginTop = '10px';
+                                statusEl.style.padding = '10px';
+                                statusEl.style.background = 'var(--background-secondary)';
+                                statusEl.style.borderRadius = '6px';
+
+                                try {
+                                    await downloader.downloadModel(model.id, (progress, message) => {
+                                        statusEl.setText(`Downloading ${model.name}: ${message} (${Math.round(progress)}%)`);
+                                    });
+
+                                    new Notice(`Model ${model.name} downloaded successfully!`);
+                                    statusEl.remove();
+                                    this.display(); // Refresh
+                                } catch (error) {
+                                    new Notice(`Download failed: ${error.message}`);
+                                    statusEl.remove();
+                                    button.setDisabled(false);
+                                    button.setButtonText('Download');
+                                }
+                            });
+                    }
+                });
         });
+
         containerEl.createEl('p', {
-            text: 'Save models to: .obsidian/plugins/meeting-intelligence/models/',
+            text: `Models saved to: ${downloader.modelDir}`,
             cls: 'setting-item-description'
         });
     }
