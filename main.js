@@ -4,6 +4,9 @@ const path = require('path');
 const fs = require('fs');
 const https = require('https');
 
+// Audio converter will be loaded lazily to avoid circular dependency
+let AudioConverter = null;
+
 const MODEL_URLS = {
     'tiny': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin',
     'tiny.en': 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
@@ -471,46 +474,42 @@ class MeetingModal extends Modal {
 
     async processRecording(audioBlob) {
         const duration = this.getDuration();
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
 
         console.log('Meeting Intelligence: Audio blob size:', audioBlob.size, 'bytes');
         console.log('Meeting Intelligence: Audio blob type:', audioBlob.type);
 
-        const tempDir = this.plugin.app.vault.adapter.basePath + '/.obsidian/plugins/meeting-intelligence/temp';
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-        }
-
-        // Save as webm first, then convert to WAV using ffmpeg
-        const webmPath = path.join(tempDir, 'meeting.webm');
-        const wavPath = path.join(tempDir, 'meeting.wav');
-        fs.writeFileSync(webmPath, buffer);
-        console.log('Meeting Intelligence: Saved webm to:', webmPath);
-
-        // Convert WebM to WAV using ffmpeg
+        this.transcribeContainer.style.display = 'block';
         this.updateTranscribeProgress(5, 'Converting audio...');
-        const convertCommand = `ffmpeg -i "${webmPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}" -y`;
-        console.log('Meeting Intelligence: Converting with:', convertCommand);
 
-        exec(convertCommand, async (error, stdout, stderr) => {
-            if (error) {
-                console.error('Meeting Intelligence: Conversion error:', error);
-                console.error('Meeting Intelligence: stderr:', stderr);
-                new Notice('Audio conversion failed. Is ffmpeg installed?');
-                this.resetModal();
-                return;
+        try {
+            // Load AudioConverter lazily
+            if (!AudioConverter) {
+                const pluginDir = this.plugin.app.vault.adapter.basePath + '/.obsidian/plugins/meeting-intelligence';
+                const converterModule = require(path.join(pluginDir, 'audio-converter.js'));
+                AudioConverter = converterModule.AudioConverter;
             }
 
-            console.log('Meeting Intelligence: Conversion successful');
+            const audioConverter = new AudioConverter();
+            const wavBuffer = await audioConverter.convertBlobToWav(audioBlob);
 
-            // Delete webm file
-            if (fs.existsSync(webmPath)) {
-                fs.unlinkSync(webmPath);
+            console.log('Meeting Intelligence: Conversion successful, WAV size:', wavBuffer.length, 'bytes');
+
+            const tempDir = this.plugin.app.vault.adapter.basePath + '/.obsidian/plugins/meeting-intelligence/temp';
+            if (!fs.existsSync(tempDir)) {
+                fs.mkdirSync(tempDir, { recursive: true });
             }
+
+            const wavPath = path.join(tempDir, 'meeting.wav');
+            await audioConverter.saveWavFile(wavBuffer, wavPath);
+            console.log('Meeting Intelligence: Saved WAV to:', wavPath);
 
             await this.transcribeAudio(wavPath, duration);
-        });
+
+        } catch (error) {
+            console.error('Meeting Intelligence: Conversion error:', error);
+            new Notice('Audio conversion failed: ' + error.message);
+            this.resetModal();
+        }
     }
 
     async transcribeAudio(audioPath, duration) {
