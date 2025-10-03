@@ -663,11 +663,11 @@ class MeetingModal extends Modal {
         // Get current folder from active file, or use root
         let folder = '';
         const activeFile = this.plugin.app.workspace.getActiveFile();
-        if (activeFile) {
+        if (activeFile && activeFile.parent) {
             folder = activeFile.parent.path;
         }
 
-        console.log('Meeting Intelligence: Saving to folder:', folder);
+        console.log('Meeting Intelligence: Saving to folder:', folder || '(root)');
 
         const now = new Date();
         const date = now.toISOString().split('T')[0];
