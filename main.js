@@ -831,12 +831,28 @@ class MeetingModal extends Modal {
                 continue;
             }
 
-            // Check if any word from the meeting title appears in other note names
-            const hasMatch = titleWords.some(word => basename.includes(word));
+            // Check in filename first
+            const filenameMatch = titleWords.some(word => basename.includes(word));
 
-            if (hasMatch) {
-                console.log('Meeting Intelligence: Found match:', basenameOriginal, 'contains one of', titleWords);
+            if (filenameMatch) {
+                console.log('Meeting Intelligence: Found in filename:', basenameOriginal, 'contains one of', titleWords);
                 links.push(`- [[${basenameOriginal}]]`);
+                continue; // Skip content search if already matched by filename
+            }
+
+            // Search in file content
+            try {
+                const content = await this.plugin.app.vault.read(file);
+                const contentLower = content.toLowerCase();
+
+                const contentMatch = titleWords.some(word => contentLower.includes(word));
+
+                if (contentMatch) {
+                    console.log('Meeting Intelligence: Found in content:', basenameOriginal, 'contains one of', titleWords);
+                    links.push(`- [[${basenameOriginal}]]`);
+                }
+            } catch (error) {
+                console.error('Meeting Intelligence: Error reading file:', basenameOriginal, error);
             }
         }
 
