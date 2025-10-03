@@ -114,10 +114,132 @@ const DEFAULT_SETTINGS = {
     autoDetectDecisions: true,
     autoLinkNotes: true,
     templateEnabled: true,
-    micSensitivity: 3 // 1-5 scale (default: 3 = medium)
+    micGain: 1.0,
+    micSensitivity: 0.5
 };
 
-const MEETING_TEMPLATE = `---
+class AudioRecorder {
+    constructor(plugin) {
+        this.plugin = plugin;
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.stream = null;
+        this.audioContext = null;
+        this.analyser = null;
+        this.gainNode = null;
+        this.volumeInterval = null;
+    }
+
+    async startRecording() {
+        try {
+            this.stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    sampleRate: 16000,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: false
+                }
+            });
+
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = this.audioContext.createMediaStreamSource(this.stream);
+
+            this.gainNode = this.audioContext.createGain();
+            this.gainNode.gain.value = this.plugin.settings.micGain;
+
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 256;
+
+            source.connect(this.gainNode);
+            this.gainNode.connect(this.analyser);
+
+            const destination = this.audioContext.createMediaStreamDestination();
+            this.gainNode.connect(destination);
+
+            this.mediaRecorder = new MediaRecorder(destination.stream);
+            this.audioChunks = [];
+
+            this.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    this.audioChunks.push(event.data);
+                }
+            };
+
+            this.startVolumeMonitoring();
+            this.mediaRecorder.start();
+
+            return true;
+        } catch (error) {
+            console.error('Microphone error:', error);
+            throw new Error('Microphone access denied');
+        }
+    }
+
+    startVolumeMonitoring() {
+        try {
+            const bufferLength = this.analyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+
+            this.volumeInterval = setInterval(() => {
+                this.analyser.getByteFrequencyData(dataArray);
+
+                let sum = 0;
+                for (let i = 0; i < bufferLength; i++) {
+                    sum += dataArray[i];
+                }
+                const average = sum / bufferLength;
+                const normalizedVolume = (average / 255) * 100;
+
+                const adjustedVolume = normalizedVolume * (1 + this.plugin.settings.micSensitivity);
+
+                if (this.plugin.meetingModal) {
+                    this.plugin.meetingModal.updateMicLevel(adjustedVolume);
+                }
+            }, 100);
+
+        } catch (error) {
+            console.error('Volume monitoring error:', error);
+        }
+    }
+
+    stopVolumeMonitoring() {
+        if (this.volumeInterval) {
+            clearInterval(this.volumeInterval);
+            this.volumeInterval = null;
+        }
+        if (this.audioContext) {
+            this.audioContext.close();
+            this.audioContext = null;
+        }
+    }
+
+    async stopRecording() {
+        this.stopVolumeMonitoring();
+
+        return new Promise((resolve, reject) => {
+            if (!this.mediaRecorder) {
+                reject(new Error('No recording'));
+                return;
+            }
+
+            this.mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm' });
+
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                }
+
+                resolve(audioBlob);
+            };
+
+            this.mediaRecorder.stop();
+        });
+    }
+}
+
+const MEETING_TEMPLATES = {
+    en: `---
 date: {{date}}
 time: {{time}}
 attendees: {{attendees}}
@@ -147,16 +269,80 @@ tags: meeting
 
 ## Related Notes
 
-`;
+`,
+    de: `---
+datum: {{date}}
+zeit: {{time}}
+teilnehmer: {{attendees}}
+dauer: {{duration}}
+tags: meeting
+---
+
+# {{title}}
+
+## Teilnehmer
+{{attendees}}
+
+## Tagesordnung
+
+
+## Diskussion
+{{transcription}}
+
+## Aktionspunkte
+- [ ]
+
+## Entscheidungen
+
+
+## Offene Fragen
+
+
+## Verwandte Notizen
+
+`,
+    auto: `---
+date: {{date}}
+time: {{time}}
+attendees: {{attendees}}
+duration: {{duration}}
+tags: meeting
+---
+
+# {{title}}
+
+## Attendees
+{{attendees}}
+
+## Agenda
+
+
+## Discussion
+{{transcription}}
+
+## Action Items
+- [ ]
+
+## Decisions Made
+
+
+## Follow-up Questions
+
+
+## Related Notes
+
+`
+};
 
 class MeetingModal extends Modal {
     constructor(app, plugin) {
         super(app);
         this.plugin = plugin;
         this.isRecording = false;
-        this.audioChunks = [];
         this.startTime = null;
         this.timerInterval = null;
+        this.volumeLevel = 0;
+        this.recorder = new AudioRecorder(plugin);
     }
 
     onOpen() {
@@ -195,17 +381,6 @@ class MeetingModal extends Modal {
         this.languageSelect.createEl('option', { text: 'English', value: 'en' });
         this.languageSelect.createEl('option', { text: 'Deutsch', value: 'de' });
         this.languageSelect.value = this.plugin.settings.language;
-
-        // Microphone sensitivity
-        const micContainer = infoContainer.createDiv({ cls: 'meeting-input-row' });
-        micContainer.createEl('label', { text: 'Mic Sensitivity:' });
-        this.micSensitivitySelect = micContainer.createEl('select', { cls: 'meeting-select' });
-        this.micSensitivitySelect.createEl('option', { text: '1 - Very Low', value: '1' });
-        this.micSensitivitySelect.createEl('option', { text: '2 - Low', value: '2' });
-        this.micSensitivitySelect.createEl('option', { text: '3 - Medium', value: '3' });
-        this.micSensitivitySelect.createEl('option', { text: '4 - High', value: '4' });
-        this.micSensitivitySelect.createEl('option', { text: '5 - Extreme', value: '5' });
-        this.micSensitivitySelect.value = String(this.plugin.settings.micSensitivity);
 
         // Status
         this.statusEl = contentEl.createDiv({ cls: 'meeting-status' });
@@ -262,43 +437,7 @@ class MeetingModal extends Modal {
         }
 
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.mediaRecorder = new MediaRecorder(stream);
-            this.audioChunks = [];
-
-            this.mediaRecorder.ondataavailable = (event) => {
-                this.audioChunks.push(event.data);
-            };
-
-            this.mediaRecorder.onstop = async () => {
-                await this.processRecording();
-            };
-
-            // Audio level monitoring
-            const audioContext = new AudioContext();
-            const source = audioContext.createMediaStreamSource(stream);
-            const analyser = audioContext.createAnalyser();
-            analyser.fftSize = 256;
-            source.connect(analyser);
-
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-
-            const updateLevel = () => {
-                if (!this.isRecording) return;
-                analyser.getByteFrequencyData(dataArray);
-                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-
-                // Apply sensitivity multiplier (1-5)
-                const sensitivity = parseInt(this.micSensitivitySelect.value);
-                const multiplier = sensitivity / 3; // 3 is the default
-                const level = Math.min(100, (average / 255) * 100 * multiplier);
-
-                this.updateMicLevel(level);
-                requestAnimationFrame(updateLevel);
-            };
-            updateLevel();
-
-            this.mediaRecorder.start();
+            await this.recorder.startRecording();
             this.isRecording = true;
             this.startTime = Date.now();
 
@@ -319,17 +458,19 @@ class MeetingModal extends Modal {
 
     async stopRecording() {
         this.isRecording = false;
-        this.mediaRecorder.stop();
         clearInterval(this.timerInterval);
 
         this.recordButton.setText('Processing...');
         this.recordButton.disabled = true;
         this.statusEl.setText('Processing recording...');
+        this.updateMicLevel(0);
+
+        const audioBlob = await this.recorder.stopRecording();
+        await this.processRecording(audioBlob);
     }
 
-    async processRecording() {
+    async processRecording(audioBlob) {
         const duration = this.getDuration();
-        const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
         const arrayBuffer = await audioBlob.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
 
@@ -413,7 +554,11 @@ class MeetingModal extends Modal {
         const title = this.titleInput.value.trim();
         const attendees = this.attendeesInput.value.trim();
 
-        let content = MEETING_TEMPLATE
+        // Use language from modal if selected, otherwise from settings
+        const selectedLanguage = this.languageSelect ? this.languageSelect.value : this.plugin.settings.language;
+        const template = MEETING_TEMPLATES[selectedLanguage] || MEETING_TEMPLATES['en'];
+
+        let content = template
             .replace(/{{date}}/g, date)
             .replace(/{{time}}/g, time)
             .replace(/{{title}}/g, title)
@@ -425,7 +570,9 @@ class MeetingModal extends Modal {
         if (this.plugin.settings.autoExtractActionItems) {
             const actionItems = this.extractActionItems(transcription);
             if (actionItems.length > 0) {
-                content = content.replace('## Action Items\n- [ ] ', '## Action Items\n' + actionItems.join('\n'));
+                const actionItemsHeader = selectedLanguage === 'de' ? '## Aktionspunkte\n- [ ] ' : '## Action Items\n- [ ] ';
+                const actionItemsReplacement = selectedLanguage === 'de' ? '## Aktionspunkte\n' : '## Action Items\n';
+                content = content.replace(actionItemsHeader, actionItemsReplacement + actionItems.join('\n'));
             }
         }
 
@@ -433,7 +580,9 @@ class MeetingModal extends Modal {
         if (this.plugin.settings.autoDetectDecisions) {
             const decisions = this.extractDecisions(transcription);
             if (decisions.length > 0) {
-                content = content.replace('## Decisions Made\n\n', '## Decisions Made\n' + decisions.join('\n') + '\n\n');
+                const decisionsHeader = selectedLanguage === 'de' ? '## Entscheidungen\n\n' : '## Decisions Made\n\n';
+                const decisionsReplacement = selectedLanguage === 'de' ? '## Entscheidungen\n' : '## Decisions Made\n';
+                content = content.replace(decisionsHeader, decisionsReplacement + decisions.join('\n') + '\n\n');
             }
         }
 
@@ -441,7 +590,9 @@ class MeetingModal extends Modal {
         if (this.plugin.settings.autoLinkNotes) {
             const links = await this.findRelatedNotes(transcription);
             if (links.length > 0) {
-                content = content.replace('## Related Notes\n\n', '## Related Notes\n' + links.join('\n') + '\n\n');
+                const relatedNotesHeader = selectedLanguage === 'de' ? '## Verwandte Notizen\n\n' : '## Related Notes\n\n';
+                const relatedNotesReplacement = selectedLanguage === 'de' ? '## Verwandte Notizen\n' : '## Related Notes\n';
+                content = content.replace(relatedNotesHeader, relatedNotesReplacement + links.join('\n') + '\n\n');
             }
         }
 
@@ -569,10 +720,18 @@ class MeetingModal extends Modal {
     }
 
     onClose() {
+        // Stop recording if active
         if (this.isRecording) {
-            this.mediaRecorder.stop();
-            clearInterval(this.timerInterval);
+            this.isRecording = false;
+            if (this.timerInterval) {
+                clearInterval(this.timerInterval);
+            }
+            this.recorder.stopVolumeMonitoring();
+            if (this.recorder.stream) {
+                this.recorder.stream.getTracks().forEach(track => track.stop());
+            }
         }
+
         const { contentEl } = this;
         contentEl.empty();
     }
@@ -582,15 +741,23 @@ class MeetingIntelligencePlugin extends Plugin {
     async onload() {
         await this.loadSettings();
 
+        this.meetingModal = null;
+
         this.addRibbonIcon('microphone', 'Start Meeting', () => {
-            new MeetingModal(this.app, this).open();
+            if (!this.meetingModal) {
+                this.meetingModal = new MeetingModal(this.app, this);
+            }
+            this.meetingModal.open();
         });
 
         this.addCommand({
             id: 'start-meeting',
             name: 'Start Meeting Recording',
             callback: () => {
-                new MeetingModal(this.app, this).open();
+                if (!this.meetingModal) {
+                    this.meetingModal = new MeetingModal(this.app, this);
+                }
+                this.meetingModal.open();
             }
         });
 
@@ -689,11 +856,25 @@ class MeetingIntelligenceSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        containerEl.createEl('h3', { text: 'Audio Settings' });
+
         new Setting(containerEl)
-            .setName('Microphone Sensitivity')
-            .setDesc('Default microphone sensitivity (1=Very Low, 5=Extreme)')
+            .setName('Microphone Gain')
+            .setDesc('Recording volume (0.5 = quiet, 2.0 = loud)')
             .addSlider(slider => slider
-                .setLimits(1, 5, 1)
+                .setLimits(0.5, 3.0, 0.1)
+                .setValue(this.plugin.settings.micGain)
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.micGain = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(containerEl)
+            .setName('Visualizer Sensitivity')
+            .setDesc('Meter sensitivity (visual only)')
+            .addSlider(slider => slider
+                .setLimits(0, 2, 0.1)
                 .setValue(this.plugin.settings.micSensitivity)
                 .setDynamicTooltip()
                 .onChange(async (value) => {
