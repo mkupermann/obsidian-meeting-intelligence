@@ -633,9 +633,9 @@ class MeetingModal extends Modal {
             }
         }
 
-        // Auto-link related notes
+        // Auto-link related notes based on meeting title
         if (this.plugin.settings.autoLinkNotes) {
-            const links = await this.findRelatedNotes(transcription);
+            const links = await this.findRelatedNotes(title);
             if (links.length > 0) {
                 const relatedNotesHeader = selectedLanguage === 'de' ? '## Verwandte Notizen\n\n' : '## Related Notes\n\n';
                 const relatedNotesReplacement = selectedLanguage === 'de' ? '## Verwandte Notizen\n' : '## Related Notes\n';
@@ -724,21 +724,32 @@ class MeetingModal extends Modal {
         return decisions.slice(0, 8); // Limit to 8 decisions
     }
 
-    async findRelatedNotes(text) {
+    async findRelatedNotes(meetingTitle) {
         const links = [];
         const files = this.plugin.app.vault.getMarkdownFiles();
-        const words = text.toLowerCase().split(/\s+/);
+
+        // Extract meaningful words from meeting title (ignore short words and dates)
+        const titleWords = meetingTitle
+            .toLowerCase()
+            .replace(/\d{4}-\d{2}-\d{2}/g, '') // Remove dates
+            .replace(/[^\w\säöüß]/g, ' ') // Remove special chars
+            .split(/\s+/)
+            .filter(word => word.length >= 3); // At least 3 characters
+
+        console.log('Meeting Intelligence: Searching for notes containing:', titleWords);
 
         for (const file of files) {
             const basename = file.basename.toLowerCase();
-            // Check if note name appears in transcription (at least 3 chars)
-            if (basename.length >= 3 && words.some(w => w.includes(basename) || basename.includes(w))) {
-                if (!links.includes(file.basename)) {
-                    links.push(`- [[${file.basename}]]`);
-                }
+
+            // Check if any word from the meeting title appears in other note names
+            const hasMatch = titleWords.some(word => basename.includes(word));
+
+            if (hasMatch && file.basename !== meetingTitle) {
+                links.push(`- [[${file.basename}]]`);
             }
         }
 
+        console.log('Meeting Intelligence: Found related notes:', links.length);
         return links.slice(0, 10); // Limit to 10 links
     }
 
